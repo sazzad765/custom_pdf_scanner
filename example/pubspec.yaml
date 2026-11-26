@@ -1,0 +1,29 @@
+name: custom_pdf_scanner_example
+description: Example host app demonstrating single-page, multi-page, and embedded reorderable list usage of custom_pdf_scanner.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  custom_pdf_scanner:
+    path: ../
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+
+# Compile only the OpenCV modules required by custom_pdf_scanner.
+hooks:
+  user_defines:
+    dartcv4:
+      include_modules:
+        - imgcodecs
+        - imgproc
