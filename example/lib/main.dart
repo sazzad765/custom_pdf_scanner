@@ -43,6 +43,9 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
 
   ScanMode _scanMode = ScanMode.multiPage;
   SinglePageBehavior _singleBehavior = SinglePageBehavior.reviewThenPdf;
+  NidScanSides _nidSides = NidScanSides.frontAndBack;
+  NidPdfLayout _nidLayout = NidPdfLayout.topAndBottomSinglePage;
+  NidCardPrintSize _nidPrintSize = NidCardPrintSize.readableMedium;
   CaptureBackend _backend = CaptureBackend.auto;
   ScanFilter _defaultFilter = ScanFilter.magicColor;
   ScanQualityPreset _qualityPreset = ScanQualityPreset.balanced;
@@ -59,7 +62,9 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
     _tabController.addListener(() {
       if (mounted) setState(() {});
     });
-    _embeddedController = CustomScannerController(config: _buildConfig());
+    _embeddedController = CustomScannerController(
+      config: CustomScannerConfig.multiPage(),
+    );
     _historyStore.addListener(_onHistoryChanged);
     unawaited(_initHistory());
   }
@@ -89,26 +94,44 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
     });
   }
 
-  CustomScannerConfig _buildConfig() => CustomScannerConfig(
-    capture: CaptureConfig(
-      scanMode: _scanMode,
-      singlePageBehavior: _singleBehavior,
-      backend: _backend,
-      maxPages: 100,
-    ),
-    processing: ProcessingConfig.fromPreset(
-      _qualityPreset,
-      defaultFilter: _defaultFilter,
-    ),
-    pdf: PdfConfig(
-      outputDirectoryPath: _historyStore.pdfsDirectoryPath,
-      pageSize: _pdfPageSize,
-      marginsPt: _pdfPageSize.isFitToImage
-          ? EdgeInsets.zero
-          : const EdgeInsets.all(20),
-      metadata: const PdfDocumentMetadata(title: 'Demo Scan'),
-    ),
-  );
+  CustomScannerConfig _buildConfig({ScanMode? overrideMode}) {
+    final mode = overrideMode ?? _scanMode;
+    final effectivePdfSize =
+        mode == ScanMode.nidCard && _pdfPageSize.isFitToImage
+        ? PdfPageSize.a4
+        : _pdfPageSize;
+
+    return CustomScannerConfig(
+      capture: CaptureConfig(
+        scanMode: mode,
+        singlePageBehavior: _singleBehavior,
+        backend: _backend,
+        maxPages: mode == ScanMode.nidCard
+            ? (_nidSides == NidScanSides.frontAndBack ? 2 : 1)
+            : 100,
+      ),
+      nid: NidScanConfig(
+        sides: _nidSides,
+        pdfLayout: _nidLayout,
+        cardPrintSize: _nidPrintSize,
+        targetPageSize: effectivePdfSize,
+      ),
+      processing: ProcessingConfig.fromPreset(
+        _qualityPreset,
+        defaultFilter: _defaultFilter,
+      ),
+      pdf: PdfConfig(
+        outputDirectoryPath: _historyStore.pdfsDirectoryPath,
+        pageSize: effectivePdfSize,
+        marginsPt: effectivePdfSize.isFitToImage
+            ? EdgeInsets.zero
+            : const EdgeInsets.all(20),
+        metadata: PdfDocumentMetadata(
+          title: mode == ScanMode.nidCard ? 'NID Card Scan' : 'Demo Scan',
+        ),
+      ),
+    );
+  }
 
   Future<void> _handleCompletedScan(
     ScannedPdfResult result, {
@@ -118,7 +141,9 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
       result: result,
       scanModeLabel: modeLabel,
       filterLabel: _defaultFilter.defaultLabel,
-      pageSizeLabel: _pdfPageSize.name.toUpperCase(),
+      pageSizeLabel: _scanMode == ScanMode.nidCard
+          ? 'A4 NID'
+          : _pdfPageSize.name.toUpperCase(),
     );
     if (!mounted) return;
     setState(() => _latestEntry = entry);
@@ -151,18 +176,20 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
     if (!mounted) return;
     final result = await CustomPdfScanner.scan(context, config: _buildConfig());
     if (result != null && mounted) {
-      await _handleCompletedScan(
-        result,
-        modeLabel: _scanMode == ScanMode.singlePage
-            ? 'Single Page'
-            : 'Multi-Page',
-      );
+      final modeLabel = switch (_scanMode) {
+        ScanMode.singlePage => 'Single Page',
+        ScanMode.multiPage => 'Multi-Page',
+        ScanMode.nidCard => 'NID Card',
+      };
+      await _handleCompletedScan(result, modeLabel: modeLabel);
     }
   }
 
   Future<void> _embeddedScan(ScanMode mode) async {
     await _historyStore.init();
-    _embeddedController.updateConfig(_buildConfig());
+    _embeddedController.updateConfig(
+      _buildConfig(overrideMode: ScanMode.multiPage),
+    );
     if (_embeddedController.shouldUseNativeMlKit()) {
       await _embeddedController.captureAndProcessWithMlKit(modeOverride: mode);
     } else {
@@ -183,7 +210,9 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
 
   Future<void> _embeddedGeneratePdf() async {
     await _historyStore.init();
-    _embeddedController.updateConfig(_buildConfig());
+    _embeddedController.updateConfig(
+      _buildConfig(overrideMode: ScanMode.multiPage),
+    );
     final res = await _embeddedController.generatePdf();
     if (mounted) {
       await _handleCompletedScan(res, modeLabel: 'Embedded List');
@@ -300,6 +329,10 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
               value: ScanMode.singlePage,
               child: Text('Single Page'),
             ),
+            DropdownMenuItem(
+              value: ScanMode.nidCard,
+              child: Text('NID Card (Front & Back)'),
+            ),
           ],
           onChanged: (v) => setState(() => _scanMode = v!),
         ),
@@ -326,6 +359,68 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
             ],
             onChanged: (v) => setState(() => _singleBehavior = v!),
           ),
+        ],
+        if (_scanMode == ScanMode.nidCard) ...[
+          const SizedBox(height: 12),
+          DropdownButtonFormField<NidScanSides>(
+            initialValue: _nidSides,
+            decoration: const InputDecoration(labelText: 'NID Sides to Scan'),
+            items: const [
+              DropdownMenuItem(
+                value: NidScanSides.frontAndBack,
+                child: Text('Front & Back Sides'),
+              ),
+              DropdownMenuItem(
+                value: NidScanSides.frontOnly,
+                child: Text('Front Side Only'),
+              ),
+            ],
+            onChanged: (v) => setState(() => _nidSides = v!),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<NidPdfLayout>(
+            initialValue: _nidLayout,
+            decoration: const InputDecoration(labelText: 'NID PDF Layout'),
+            items: const [
+              DropdownMenuItem(
+                value: NidPdfLayout.topAndBottomSinglePage,
+                child: Text('1 A4 Page (Front Top, Back Bottom)'),
+              ),
+              DropdownMenuItem(
+                value: NidPdfLayout.sideBySideSinglePage,
+                child: Text('1 A4 Page (Front & Back Side-by-Side)'),
+              ),
+              DropdownMenuItem(
+                value: NidPdfLayout.separatePages,
+                child: Text('2 Separate Pages'),
+              ),
+            ],
+            onChanged: (v) => setState(() => _nidLayout = v!),
+          ),
+          if (_nidLayout != NidPdfLayout.separatePages) ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<NidCardPrintSize>(
+              initialValue: _nidPrintSize,
+              decoration: const InputDecoration(
+                labelText: 'Card Size on Sheet',
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: NidCardPrintSize.readableMedium,
+                  child: Text('Readable Medium (~62% width)'),
+                ),
+                DropdownMenuItem(
+                  value: NidCardPrintSize.actualIsoId1,
+                  child: Text('1:1 Actual ISO ID-1 (85.6 × 54 mm)'),
+                ),
+                DropdownMenuItem(
+                  value: NidCardPrintSize.largeFit,
+                  child: Text('Large Fit'),
+                ),
+              ],
+              onChanged: (v) => setState(() => _nidPrintSize = v!),
+            ),
+          ],
         ],
         const SizedBox(height: 12),
         DropdownButtonFormField<CaptureBackend>(
@@ -367,23 +462,25 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
           ],
           onChanged: (v) => setState(() => _qualityPreset = v!),
         ),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<PdfPageSize>(
-          initialValue: _pdfPageSize,
-          decoration: const InputDecoration(labelText: 'PDF Page Size'),
-          items: const [
-            DropdownMenuItem(
-              value: PdfPageSize.fitToImage,
-              child: Text('Fit to Scanned Page'),
-            ),
-            DropdownMenuItem(value: PdfPageSize.a4, child: Text('ISO A4')),
-            DropdownMenuItem(
-              value: PdfPageSize.letter,
-              child: Text('US Letter'),
-            ),
-          ],
-          onChanged: (v) => setState(() => _pdfPageSize = v!),
-        ),
+        if (_scanMode != ScanMode.nidCard) ...[
+          const SizedBox(height: 12),
+          DropdownButtonFormField<PdfPageSize>(
+            initialValue: _pdfPageSize,
+            decoration: const InputDecoration(labelText: 'PDF Page Size'),
+            items: const [
+              DropdownMenuItem(
+                value: PdfPageSize.fitToImage,
+                child: Text('Fit to Scanned Page'),
+              ),
+              DropdownMenuItem(value: PdfPageSize.a4, child: Text('ISO A4')),
+              DropdownMenuItem(
+                value: PdfPageSize.letter,
+                child: Text('US Letter'),
+              ),
+            ],
+            onChanged: (v) => setState(() => _pdfPageSize = v!),
+          ),
+        ],
         const SizedBox(height: 8),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
@@ -397,8 +494,16 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
             padding: const EdgeInsets.symmetric(vertical: 14),
           ),
           onPressed: _launchModalScanner,
-          icon: const Icon(Icons.document_scanner_outlined),
-          label: const Text('Launch CustomPdfScanner.scan()'),
+          icon: Icon(
+            _scanMode == ScanMode.nidCard
+                ? Icons.badge_outlined
+                : Icons.document_scanner_outlined,
+          ),
+          label: Text(
+            _scanMode == ScanMode.nidCard
+                ? 'Launch NID Card Scanner'
+                : 'Launch CustomPdfScanner.scan()',
+          ),
         ),
         if (_latestEntry != null) ...[
           const SizedBox(height: 20),
@@ -591,7 +696,7 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
                     Text(
                       '${entry.pageCount} ${entry.pageCount == 1 ? 'page' : 'pages'} · '
                       '${ScanHistoryStore.formatBytes(entry.byteLength)} · '
-                      '${entry.filterLabel}',
+                      '${entry.scanModeLabel}',
                       style: const TextStyle(
                         fontSize: 12,
                         color: Colors.black54,

@@ -15,8 +15,8 @@ import '../../infrastructure/crop/opencv_document_detector.dart';
 import '../widgets/camera_boundary_overlay.dart';
 
 /// Built-in cross-platform (`Android` & `iOS`) camera capture screen supporting
-/// both **Single-Page** (`maxShots == 1`) and **Multi-Page** (`maxShots > 1`)
-/// capture with live OpenCV boundary tracking, torch control, and auto-shutter.
+/// **Single-Page**, **Multi-Page**, and **NID Card** capture (with an ID-1 card
+/// target guide overlay, live OpenCV boundary tracking, torch, and auto-shutter).
 ///
 /// Pops with `List<CapturedRawPage>` (empty if cancelled).
 class MultiShotCameraScreen extends StatefulWidget {
@@ -25,6 +25,8 @@ class MultiShotCameraScreen extends StatefulWidget {
     required this.config,
     required this.scanMode,
     this.maxShots,
+    this.guidePrompt,
+    this.idCardFrameAspectRatio,
     this.cameraServiceOverride,
     this.detectorOverride,
     super.key,
@@ -33,11 +35,19 @@ class MultiShotCameraScreen extends StatefulWidget {
   /// Full scanner configuration.
   final CustomScannerConfig config;
 
-  /// Whether this camera session captures a single shot or a multi-page batch.
+  /// Whether this camera session captures a single shot, multi-page batch, or NID card.
   final ScanMode scanMode;
 
   /// Optional cap on how many shots can be captured in this camera visit.
   final int? maxShots;
+
+  /// Optional custom instruction pill shown at the top of the camera preview
+  /// (e.g. `"Align FRONT side of NID card inside frame"`).
+  final String? guidePrompt;
+
+  /// When provided (or when [scanMode] is [ScanMode.nidCard]), draws a centered
+  /// ID-card framing box with this `width / height` aspect ratio.
+  final double? idCardFrameAspectRatio;
 
   /// Optional test double for [CameraStreamService].
   final CameraStreamService? cameraServiceOverride;
@@ -53,12 +63,25 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
   late final CustomCameraController _camera;
   final List<CapturedRawPage> _captured = <CapturedRawPage>[];
 
-  int? get _effectiveLimit => widget.scanMode == ScanMode.singlePage
-      ? 1
-      : widget.maxShots ?? widget.config.capture.maxPages;
+  int? get _effectiveLimit => switch (widget.scanMode) {
+    ScanMode.singlePage => 1,
+    ScanMode.nidCard => widget.maxShots ?? widget.config.nid.expectedSideCount,
+    ScanMode.multiPage => widget.maxShots ?? widget.config.capture.maxPages,
+  };
 
   bool get _atLimit =>
       _effectiveLimit != null && _captured.length >= _effectiveLimit!;
+
+  double? get _activeIdAspectRatio {
+    if (widget.idCardFrameAspectRatio != null) {
+      return widget.idCardFrameAspectRatio;
+    }
+    if (widget.scanMode == ScanMode.nidCard &&
+        widget.config.nid.showIdFrameGuideInCamera) {
+      return widget.config.nid.isoCardAspectRatio;
+    }
+    return null;
+  }
 
   @override
   void initState() {
@@ -99,7 +122,7 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
       setState(() {
         _captured.add(CapturedRawPage(path: path, preCropped: false));
       });
-      if (widget.scanMode == ScanMode.singlePage || _atLimit) {
+      if (_effectiveLimit == 1 || _atLimit) {
         await _finish();
       }
     } on Object catch (e) {
@@ -125,6 +148,29 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
     }
   }
 
+  String _resolvePromptText(ScannerStrings strings) {
+    if (_camera.isLowLight) {
+      return 'Low light — turn on flash or move to brighter light';
+    }
+    if (_camera.boundaryPhase == LiveBoundaryPhase.stable) {
+      return 'Hold steady…';
+    }
+    if (_camera.boundaryPhase == LiveBoundaryPhase.detected) {
+      return 'Card / page detected — hold steady';
+    }
+    if (widget.guidePrompt != null) {
+      return widget.guidePrompt!;
+    }
+    if (widget.scanMode == ScanMode.nidCard) {
+      return _captured.isEmpty
+          ? strings.nidCameraFrontHint
+          : strings.nidCameraBackHint;
+    }
+    return widget.scanMode == ScanMode.multiPage
+        ? 'Align page and capture multiple sheets'
+        : 'Align document inside frame';
+  }
+
   @override
   Widget build(BuildContext context) {
     final ui = widget.config.ui;
@@ -140,7 +186,11 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
           onPressed: _cancel,
           icon: const Icon(Icons.close_rounded),
         ),
-        title: Text(strings.cameraScreenTitle),
+        title: Text(
+          widget.scanMode == ScanMode.nidCard
+              ? strings.nidScreenTitle
+              : strings.cameraScreenTitle,
+        ),
         actions: [
           TextButton.icon(
             onPressed: _camera.toggleAutoCapture,
@@ -175,7 +225,7 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            Expanded(child: _buildViewport(theme)),
+            Expanded(child: _buildViewport(theme, strings)),
             _buildBottomControls(theme, strings),
           ],
         ),
@@ -183,7 +233,7 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
     );
   }
 
-  Widget _buildViewport(ScannerThemeData theme) {
+  Widget _buildViewport(ScannerThemeData theme, ScannerStrings strings) {
     if (_camera.status == CameraLifecycleStatus.opening ||
         _camera.status == CameraLifecycleStatus.closed) {
       return const Center(
@@ -225,6 +275,7 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
       LiveBoundaryPhase.detected => theme.cropFrameColor,
       LiveBoundaryPhase.searching => Colors.white54,
     };
+    final idRatio = _activeIdAspectRatio;
 
     return Center(
       child: AspectRatio(
@@ -233,6 +284,11 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
           fit: StackFit.expand,
           children: [
             _camera.buildPreview(),
+            if (idRatio != null && boundary == null)
+              _IdCardFrameGuide(
+                cardAspectRatio: idRatio,
+                borderColor: theme.cropFrameColor,
+              ),
             if (boundary != null)
               CameraBoundaryOverlay(
                 corners: [for (final p in boundary) Offset(p.x, p.y)],
@@ -247,26 +303,21 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
               child: Center(
                 child: Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
+                    horizontal: 14,
+                    vertical: 7,
                   ),
                   decoration: BoxDecoration(
                     color: Colors.black54,
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    _camera.isLowLight
-                        ? 'Low light — turn on flash or move to brighter light'
-                        : switch (_camera.boundaryPhase) {
-                            LiveBoundaryPhase.stable => 'Hold steady…',
-                            LiveBoundaryPhase.detected =>
-                              'Page detected — hold steady',
-                            LiveBoundaryPhase.searching =>
-                              widget.scanMode == ScanMode.multiPage
-                                  ? 'Align page and capture multiple sheets'
-                                  : 'Align document inside frame',
-                          },
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    _resolvePromptText(strings),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
                   ),
                 ),
               ),
@@ -278,13 +329,15 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
   }
 
   Widget _buildBottomControls(ScannerThemeData theme, ScannerStrings strings) {
+    final allowPartialFinish =
+        widget.scanMode == ScanMode.multiPage && _captured.isNotEmpty;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
       color: Colors.black,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Left: latest captured thumbnail + counter in multi-page mode.
           SizedBox(
             width: 88,
             child: _captured.isEmpty
@@ -322,7 +375,6 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
                     ],
                   ),
           ),
-          // Center: Shutter button.
           GestureDetector(
             onTap: _camera.status == CameraLifecycleStatus.ready && !_atLimit
                 ? _shoot
@@ -343,10 +395,9 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
               ),
             ),
           ),
-          // Right: Done button in multi-page mode once >= 1 page captured.
           SizedBox(
             width: 88,
-            child: widget.scanMode == ScanMode.multiPage && _captured.isNotEmpty
+            child: allowPartialFinish
                 ? FilledButton(
                     style: FilledButton.styleFrom(
                       backgroundColor: theme.primaryColor,
@@ -361,4 +412,67 @@ class _MultiShotCameraScreenState extends State<MultiShotCameraScreen> {
       ),
     );
   }
+}
+
+class _IdCardFrameGuide extends StatelessWidget {
+  const _IdCardFrameGuide({
+    required this.cardAspectRatio,
+    required this.borderColor,
+  });
+
+  final double cardAspectRatio;
+  final Color borderColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _IdCardGuidePainter(
+        cardAspectRatio: cardAspectRatio,
+        borderColor: borderColor,
+      ),
+      child: const SizedBox.expand(),
+    );
+  }
+}
+
+class _IdCardGuidePainter extends CustomPainter {
+  _IdCardGuidePainter({
+    required this.cardAspectRatio,
+    required this.borderColor,
+  });
+
+  final double cardAspectRatio;
+  final Color borderColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final boxW = size.width * 0.88;
+    final boxH = (boxW / cardAspectRatio).clamp(80.0, size.height * 0.65);
+    final rect = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: boxW,
+      height: boxH,
+    );
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(14));
+
+    final mask = Path.combine(
+      PathOperation.difference,
+      Path()..addRect(Offset.zero & size),
+      Path()..addRRect(rrect),
+    );
+    canvas.drawPath(mask, Paint()..color = const Color(0x88000000));
+
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..color = borderColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_IdCardGuidePainter oldDelegate) =>
+      oldDelegate.cardAspectRatio != cardAspectRatio ||
+      oldDelegate.borderColor != borderColor;
 }

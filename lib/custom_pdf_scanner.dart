@@ -1,17 +1,18 @@
 /// Configurable, 100% local/offline document scanner SDK for Flutter with
-/// single-page & multi-page batch capture, OpenCV perspective cropping &
-/// enhancement filters, an embeddable reorderable page list/grid with
-/// "+ Add More", and a streaming on-device PDF 1.4 generator.
+/// single-page, multi-page batch, and National ID (`ScanMode.nidCard`) capture,
+/// OpenCV perspective cropping & enhancement filters, an embeddable reorderable
+/// page list/grid with "+ Add More", and a streaming on-device PDF 1.4 generator.
 ///
 /// ## Quickstart
 ///
 /// ```dart
 /// import 'package:custom_pdf_scanner/custom_pdf_scanner.dart';
 ///
-/// final result = await CustomPdfScanner.scanMultiPage(context);
-/// if (result != null) {
-///   print('Saved ${result.pageCount} pages to ${result.pdfPath}');
-/// }
+/// // Multi-page batch scan -> reorderable list -> PDF:
+/// final doc = await CustomPdfScanner.scanMultiPage(context);
+///
+/// // Guided Front & Back NID card scan -> 1-page A4 composite PDF:
+/// final nid = await CustomPdfScanner.scanNidCard(context);
 /// ```
 ///
 /// For embedded UI workflows, instantiate [CustomScannerController] and mount
@@ -23,6 +24,7 @@ library;
 // Configuration & Theme
 export 'src/config/capture_config.dart';
 export 'src/config/custom_scanner_config.dart';
+export 'src/config/nid_scan_config.dart';
 export 'src/config/page_list_config.dart';
 export 'src/config/pdf_config.dart';
 export 'src/config/processing_config.dart';
@@ -57,6 +59,7 @@ export 'src/infrastructure/processing/page_quality_evaluator.dart';
 // Turnkey Launcher, Screens & Embeddable Widgets
 export 'src/presentation/custom_pdf_scanner_launcher.dart';
 export 'src/presentation/screens/multi_shot_camera_screen.dart';
+export 'src/presentation/screens/nid_scan_screen.dart';
 export 'src/presentation/screens/page_crop_screen.dart';
 export 'src/presentation/screens/page_editor_screen.dart';
 export 'src/presentation/screens/scanned_pages_screen.dart';

@@ -1,11 +1,17 @@
-/// Whether a capture session scans a single page or multiple pages at once.
+/// Whether a capture session scans a single page, a multi-page document batch,
+/// or a guided Front & Back National ID (NID) card.
 enum ScanMode {
-  /// Captures a single page (`pageLimit: 1`).
+  /// Captures a single document page (`pageLimit: 1`).
   singlePage,
 
   /// Captures multiple pages in one batch, processes all captured pages through
   /// OpenCV, and appends them to the local reorderable page list.
   multiPage,
+
+  /// Guided National ID / Smart ID / Driver's License card mode supporting
+  /// Front & Back capture, ID-1 card aspect normalization, and single-page
+  /// Front + Back composite A4/Letter PDF export.
+  nidCard,
 }
 
 /// Post-capture flow when [CaptureConfig.scanMode] is [ScanMode.singlePage].
@@ -57,8 +63,8 @@ enum ScannerCameraResolution {
   max,
 }
 
-/// Configuration for page acquisition (single vs. multi-page, backend, camera
-/// controls, and auto-capture).
+/// Configuration for page acquisition (single vs. multi-page vs. NID card,
+/// backend, camera controls, and auto-capture).
 class CaptureConfig {
   /// Creates a [CaptureConfig].
   const CaptureConfig({
@@ -78,7 +84,7 @@ class CaptureConfig {
     this.cameraResolution = ScannerCameraResolution.max,
   });
 
-  /// Single-page or multi-page capture mode.
+  /// Single-page, multi-page, or NID card capture mode.
   final ScanMode scanMode;
 
   /// Behavior after capturing a page in [ScanMode.singlePage].
@@ -88,9 +94,6 @@ class CaptureConfig {
   final CaptureBackend backend;
 
   /// Maximum total pages allowed in the session (`null` for unlimited).
-  ///
-  /// When [scanMode] is [ScanMode.singlePage] and [singlePageBehavior] is not
-  /// [SinglePageBehavior.addToPageList], capture is automatically capped to 1.
   final int? maxPages;
 
   /// Allows importing existing photos from the gallery inside ML Kit scanner.

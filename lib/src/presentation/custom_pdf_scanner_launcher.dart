@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../config/capture_config.dart';
 import '../config/custom_scanner_config.dart';
+import '../config/nid_scan_config.dart';
 import '../config/page_list_config.dart';
 import '../config/pdf_config.dart';
 import '../config/processing_config.dart';
@@ -9,13 +10,14 @@ import '../config/scanner_ui_config.dart';
 import '../controller/custom_scanner_controller.dart';
 import '../domain/scanned_page.dart';
 import '../domain/scanned_pdf_result.dart';
+import 'screens/nid_scan_screen.dart';
 import 'screens/scanned_pages_screen.dart';
 
-/// High-level entry points for launching the document scanner UI or running
+/// High-level entry points for launching the document/NID scanner UI or running
 /// headless local OpenCV + PDF batch pipelines.
 abstract final class CustomPdfScanner {
-  /// Launches the full scanner flow with [config] and returns a local
-  /// [ScannedPdfResult] (or `null` if the user cancels).
+  /// Launches the full scanner flow with [config] (`singlePage`, `multiPage`,
+  /// or `nidCard`) and returns a local [ScannedPdfResult] (or `null` if cancelled).
   static Future<ScannedPdfResult?> scan(
     BuildContext context, {
     CustomScannerConfig config = const CustomScannerConfig(),
@@ -23,11 +25,17 @@ abstract final class CustomPdfScanner {
     final controller = CustomScannerController(config: config);
     return Navigator.of(context).push<ScannedPdfResult>(
       MaterialPageRoute(
-        builder: (_) => ScannedPagesScreen(
-          controller: controller,
-          autoLaunchCaptureOnOpen: true,
-          disposeControllerOnExit: true,
-        ),
+        builder: (_) => config.capture.scanMode == ScanMode.nidCard
+            ? NidScanScreen(
+                controller: controller,
+                autoLaunchCaptureOnOpen: true,
+                disposeControllerOnExit: true,
+              )
+            : ScannedPagesScreen(
+                controller: controller,
+                autoLaunchCaptureOnOpen: true,
+                disposeControllerOnExit: true,
+              ),
       ),
     );
   }
@@ -76,9 +84,34 @@ abstract final class CustomPdfScanner {
     ),
   );
 
+  /// Convenience launcher configured specifically for **National ID / Smart ID
+  /// Card (`ScanMode.nidCard`)** Front & Back guided scanning and single-page
+  /// composite A4/Letter PDF export.
+  static Future<ScannedPdfResult?> scanNidCard(
+    BuildContext context, {
+    NidScanConfig nid = const NidScanConfig(),
+    CaptureBackend backend = CaptureBackend.auto,
+    bool allowGalleryImport = true,
+    ProcessingConfig processing = const ProcessingConfig(),
+    PdfConfig pdf = const PdfConfig(pageSize: PdfPageSize.a4),
+    ScannerUiConfig ui = const ScannerUiConfig(),
+  }) => scan(
+    context,
+    config: CustomScannerConfig.nidCard(
+      nid: nid,
+      backend: backend,
+      allowGalleryImport: allowGalleryImport,
+      processing: processing,
+      pdf: pdf,
+      ui: ui,
+    ),
+  );
+
   /// Pure **headless** batch pipeline: takes `1..N` local [imagePaths], runs
   /// OpenCV perspective crop + filter enhancement sequentially on each page,
-  /// streams them into a local `.pdf` file, and returns [ScannedPdfResult].
+  /// streams them into a local `.pdf` file (including composite 1-page NID
+  /// layout when `config.capture.scanMode == ScanMode.nidCard`), and returns
+  /// [ScannedPdfResult].
   static Future<ScannedPdfResult> processFilesToPdf({
     required List<String> imagePaths,
     String? outputFilePath,

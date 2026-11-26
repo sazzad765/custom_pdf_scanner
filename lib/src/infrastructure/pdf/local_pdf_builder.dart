@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dartcv4/dartcv.dart' as cv;
 import 'package:path/path.dart' as p;
 
+import '../../config/nid_scan_config.dart';
 import '../../config/pdf_config.dart';
 import '../../domain/scanned_page.dart';
 import '../../domain/scanned_pdf_result.dart';
@@ -16,7 +17,7 @@ import '../processing/opencv_support.dart';
 import 'streaming_pdf_writer.dart';
 
 /// Input item when calling [LocalPdfBuilder.buildFromFiles] directly without
-/// a [CustomScannerController].
+/// a `CustomScannerController`.
 class PdfPageInput {
   /// Creates a [PdfPageInput] pointing to a local image file.
   const PdfPageInput({
@@ -32,12 +33,8 @@ class PdfPageInput {
 }
 
 /// High-efficiency local PDF builder that streams scanned pages directly to disk
-/// in a background isolate.
-///
-/// * **Color & Grayscale JPEGs** are embedded directly as `/DCTDecode` streams
-///   with zero pixel decoding or re-encoding.
-/// * **Black & White 8-bit PNGs** are embedded losslessly as zlib `/FlateDecode`
-///   `/DeviceGray` streams so crisp Sauvola text edges never get JPEG artifacts.
+/// in a background isolate, supporting both standard multi-page documents and
+/// composite single-page Front + Back NID card layouts.
 class LocalPdfBuilder {
   /// Creates a [LocalPdfBuilder].
   const LocalPdfBuilder({this.config = const PdfConfig()});
@@ -46,10 +43,15 @@ class LocalPdfBuilder {
   final PdfConfig config;
 
   /// Builds a local `.pdf` file from ordered [ScannedPage] items.
+  ///
+  /// When [nidCompositeConfig] is provided (and `pdfLayout != NidPdfLayout.separatePages`),
+  /// pairs of NID sides (`Front` and optional `Back`) are composed onto a single
+  /// fixed PDF page (`pageCount == 1`).
   Future<ScannedPdfResult> buildFromScannedPages({
     required List<ScannedPage> pages,
     String? outputFilePath,
     PdfConfig? overrideConfig,
+    NidScanConfig? nidCompositeConfig,
     void Function(PdfGenerationProgress progress)? onProgress,
   }) async {
     if (pages.isEmpty) {
@@ -60,23 +62,26 @@ class LocalPdfBuilder {
     final cfg = overrideConfig ?? config;
     final resolvedPath = await _resolveOutputPath(outputFilePath, cfg);
     final inputs = [
-      for (final page in pages)
-        // Note: rotationQuarterTurns was already baked into croppedPath/exportPath
-        // during perspective crop, so extraRotationQuarterTurns is 0 here.
-        PdfPageInput(imagePath: page.exportPath),
+      for (final page in pages) PdfPageInput(imagePath: page.exportPath),
     ];
+
+    final useComposite =
+        nidCompositeConfig != null &&
+        nidCompositeConfig.pdfLayout != NidPdfLayout.separatePages &&
+        pages.length <= 2;
 
     final out = await _runBuild(
       inputs: inputs,
       outputPath: resolvedPath,
       config: cfg,
+      nidConfig: useComposite ? nidCompositeConfig : null,
       onProgress: onProgress,
     );
 
     return ScannedPdfResult(
       pdfPath: out.pdfPath,
       pages: List<ScannedPage>.unmodifiable(pages),
-      pageCount: pages.length,
+      pageCount: out.pdfPageCount,
       byteLength: out.byteLength,
       sha256: out.sha256,
       generatedAt: out.generatedAt,
@@ -89,6 +94,7 @@ class LocalPdfBuilder {
     required List<PdfPageInput> pages,
     required String outputFilePath,
     PdfConfig? overrideConfig,
+    NidScanConfig? nidCompositeConfig,
     void Function(PdfGenerationProgress progress)? onProgress,
   }) async {
     if (pages.isEmpty) {
@@ -98,15 +104,21 @@ class LocalPdfBuilder {
     }
     final cfg = overrideConfig ?? config;
     await File(outputFilePath).parent.create(recursive: true);
+    final useComposite =
+        nidCompositeConfig != null &&
+        nidCompositeConfig.pdfLayout != NidPdfLayout.separatePages &&
+        pages.length <= 2;
+
     final out = await _runBuild(
       inputs: pages,
       outputPath: outputFilePath,
       config: cfg,
+      nidConfig: useComposite ? nidCompositeConfig : null,
       onProgress: onProgress,
     );
     return (
       pdfPath: out.pdfPath,
-      pageCount: pages.length,
+      pageCount: out.pdfPageCount,
       byteLength: out.byteLength,
       sha256: out.sha256,
     );
@@ -128,6 +140,7 @@ class LocalPdfBuilder {
     required List<PdfPageInput> inputs,
     required String outputPath,
     required PdfConfig config,
+    required NidScanConfig? nidConfig,
     required void Function(PdfGenerationProgress progress)? onProgress,
   }) async {
     if (!config.useIsolate) {
@@ -135,6 +148,7 @@ class LocalPdfBuilder {
         inputs: inputs,
         outputPath: outputPath,
         config: config,
+        nidConfig: nidConfig,
         onPageDone: (done, total) => onProgress?.call(
           PdfGenerationProgress(completedPages: done, totalPages: total),
         ),
@@ -169,6 +183,7 @@ class LocalPdfBuilder {
         inputs,
         outputPath,
         config,
+        nidConfig,
       ));
       return await completer.future;
     } finally {
@@ -181,26 +196,29 @@ class LocalPdfBuilder {
 class _PdfBuildWorkerOutput {
   const _PdfBuildWorkerOutput({
     required this.pdfPath,
+    required this.pdfPageCount,
     required this.byteLength,
     required this.generatedAt,
     this.sha256,
   });
 
   final String pdfPath;
+  final int pdfPageCount;
   final int byteLength;
   final String? sha256;
   final DateTime generatedAt;
 }
 
 Future<void> _pdfIsolateEntry(
-  (SendPort, List<PdfPageInput>, String, PdfConfig) args,
+  (SendPort, List<PdfPageInput>, String, PdfConfig, NidScanConfig?) args,
 ) async {
-  final (port, inputs, outputPath, config) = args;
+  final (port, inputs, outputPath, config, nidConfig) = args;
   try {
     final result = await _buildPdfSyncOrAsync(
       inputs: inputs,
       outputPath: outputPath,
       config: config,
+      nidConfig: nidConfig,
       onPageDone: (done, total) => port.send((done, total)),
     );
     port.send(result);
@@ -215,6 +233,7 @@ Future<_PdfBuildWorkerOutput> _buildPdfSyncOrAsync({
   required List<PdfPageInput> inputs,
   required String outputPath,
   required PdfConfig config,
+  required NidScanConfig? nidConfig,
   required void Function(int done, int total) onPageDone,
 }) async {
   final tmpFile = File(
@@ -226,26 +245,63 @@ Future<_PdfBuildWorkerOutput> _buildPdfSyncOrAsync({
   final createdAt = DateTime.now();
 
   try {
-    for (var i = 0; i < inputs.length; i++) {
-      final item = inputs[i];
-      final sourceFile = File(item.imagePath);
-      if (!await sourceFile.exists()) {
-        throw PdfGenerationException(
-          'Page ${i + 1} image file is missing (${item.imagePath}).',
+    final int pdfPageCount;
+    if (nidConfig != null &&
+        nidConfig.pdfLayout != NidPdfLayout.separatePages &&
+        inputs.length <= 2) {
+      final frontRaw = await _encodePageStream(inputs[0].imagePath);
+      onPageDone(1, inputs.length);
+
+      PdfEncodedImage? backEncoded;
+      if (inputs.length > 1) {
+        final backRaw = await _encodePageStream(inputs[1].imagePath);
+        backEncoded = (
+          encodedStream: backRaw.bytes,
+          imageWidth: backRaw.width,
+          imageHeight: backRaw.height,
+          colorSpace: backRaw.colorSpace,
+          filter: backRaw.filter,
+          extraQuarterTurns: inputs[1].extraRotationQuarterTurns,
         );
+        onPageDone(2, inputs.length);
       }
 
-      final encoded = await _encodePageStream(item.imagePath);
-      writer.addImagePage(
-        encodedStream: encoded.bytes,
-        imageWidth: encoded.width,
-        imageHeight: encoded.height,
-        colorSpace: encoded.colorSpace,
-        filter: encoded.filter,
-        config: config,
-        extraQuarterTurns: item.extraRotationQuarterTurns,
+      writer.addNidCompositePage(
+        front: (
+          encodedStream: frontRaw.bytes,
+          imageWidth: frontRaw.width,
+          imageHeight: frontRaw.height,
+          colorSpace: frontRaw.colorSpace,
+          filter: frontRaw.filter,
+          extraQuarterTurns: inputs[0].extraRotationQuarterTurns,
+        ),
+        back: backEncoded,
+        nidConfig: nidConfig,
       );
-      onPageDone(i + 1, inputs.length);
+      pdfPageCount = 1;
+    } else {
+      for (var i = 0; i < inputs.length; i++) {
+        final item = inputs[i];
+        final sourceFile = File(item.imagePath);
+        if (!await sourceFile.exists()) {
+          throw PdfGenerationException(
+            'Page ${i + 1} image file is missing (${item.imagePath}).',
+          );
+        }
+
+        final encoded = await _encodePageStream(item.imagePath);
+        writer.addImagePage(
+          encodedStream: encoded.bytes,
+          imageWidth: encoded.width,
+          imageHeight: encoded.height,
+          colorSpace: encoded.colorSpace,
+          filter: encoded.filter,
+          config: config,
+          extraQuarterTurns: item.extraRotationQuarterTurns,
+        );
+        onPageDone(i + 1, inputs.length);
+      }
+      pdfPageCount = inputs.length;
     }
 
     final totalBytes = writer.finish(config.metadata, createdAt);
@@ -264,6 +320,7 @@ Future<_PdfBuildWorkerOutput> _buildPdfSyncOrAsync({
 
     return _PdfBuildWorkerOutput(
       pdfPath: outputPath,
+      pdfPageCount: pdfPageCount,
       byteLength: totalBytes,
       sha256: digestHex,
       generatedAt: createdAt,
@@ -290,12 +347,16 @@ typedef _EncodedPdfImage = ({
 });
 
 Future<_EncodedPdfImage> _encodePageStream(String imagePath) async {
-  // Fast path 1: Upright 1-channel or 3-channel JPEG -> zero-re-encode /DCTDecode!
+  final sourceFile = File(imagePath);
+  if (!await sourceFile.exists()) {
+    throw PdfGenerationException('Image file is missing ($imagePath).');
+  }
+
   final jpegInfo = await orientedJpegInfo(imagePath);
   if (jpegInfo != null &&
       jpegInfo.orientation == 1 &&
       (jpegInfo.components == 1 || jpegInfo.components == 3)) {
-    final rawJpeg = await File(imagePath).readAsBytes();
+    final rawJpeg = await sourceFile.readAsBytes();
     return (
       bytes: rawJpeg,
       width: jpegInfo.rawWidth,
@@ -305,7 +366,6 @@ Future<_EncodedPdfImage> _encodePageStream(String imagePath) async {
     );
   }
 
-  // Fast path 2: 8-bit grayscale/B&W PNG (e.g. Sauvola B&W) -> lossless /FlateDecode!
   final scope = MatScope();
   try {
     final ext = p.extension(imagePath).toLowerCase();
@@ -329,7 +389,6 @@ Future<_EncodedPdfImage> _encodePageStream(String imagePath) async {
       }
     }
 
-    // Fallback path: EXIF-oriented JPEGs (orientation != 1), RGB PNGs, WebP, BMP, etc.
     final bgr = scope.add(await cv.imreadAsync(imagePath));
     if (bgr.isEmpty) {
       throw PdfGenerationException('Could not decode image page ($imagePath).');

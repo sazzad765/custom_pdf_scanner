@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../config/capture_config.dart';
 import '../config/custom_scanner_config.dart';
+import '../config/nid_scan_config.dart';
 import '../config/pdf_config.dart';
 import '../domain/crop_corners.dart';
 import '../domain/crop_models.dart';
@@ -24,12 +25,8 @@ import '../infrastructure/processing/page_quality_evaluator.dart';
 import '../infrastructure/storage/temp_scan_workspace.dart';
 
 /// Stateful SDK controller managing the local reorderable scanned pages list,
-/// single & multi-page batch OpenCV processing, "+ Add More" appending,
-/// per-page/batch editing, and local PDF generation.
-///
-/// Host applications can either let `CustomPdfScanner.scan(...)` manage this
-/// controller automatically or instantiate [CustomScannerController] directly
-/// to embed `ScannedPagesReorderableView` (or custom UI) inside their own screens.
+/// single-page, multi-page batch, and Front/Back NID OpenCV processing,
+/// "+ Add More" appending, per-page/batch editing, and local PDF generation.
 class CustomScannerController extends ChangeNotifier {
   /// Creates a [CustomScannerController] with customizable [config] and optional
   /// service overrides (useful for unit/widget testing).
@@ -84,6 +81,10 @@ class CustomScannerController extends ChangeNotifier {
 
   /// Remaining page capacity before hitting `CaptureConfig.maxPages`, or `null` if unlimited.
   int? get remainingPageSlots {
+    if (_config.capture.scanMode == ScanMode.nidCard) {
+      final expected = _config.nid.expectedSideCount;
+      return (expected - _pages.length).clamp(0, expected);
+    }
     final max = _config.capture.maxPages;
     if (max == null) return null;
     return (max - _pages.length).clamp(0, max);
@@ -159,20 +160,23 @@ class CustomScannerController extends ChangeNotifier {
     };
   }
 
-  /// Launches native ML Kit capture (Android) in single-page or multi-page mode,
-  /// processes all captured pages through OpenCV, and adds them to [pages].
-  ///
-  /// Returns the newly processed [ScannedPage] items (empty if the user cancelled).
+  /// Launches native ML Kit capture (Android) in single-page, multi-page, or
+  /// NID mode, processes all captured pages through OpenCV, and adds them to [pages].
   Future<List<ScannedPage>> captureAndProcessWithMlKit({
     ScanMode? modeOverride,
+    int? explicitPageLimit,
     String? replacePageId,
     int? insertAt,
     ScanFilter? filter,
   }) async {
     final mode = modeOverride ?? _config.capture.scanMode;
     final int limit;
-    if (replacePageId != null || mode == ScanMode.singlePage) {
+    if (explicitPageLimit != null) {
+      limit = explicitPageLimit;
+    } else if (replacePageId != null || mode == ScanMode.singlePage) {
       limit = 1;
+    } else if (mode == ScanMode.nidCard) {
+      limit = remainingPageSlots ?? _config.nid.expectedSideCount;
     } else {
       limit = remainingPageSlots ?? 200;
     }
@@ -192,8 +196,8 @@ class CustomScannerController extends ChangeNotifier {
   }
 
   /// Imports arbitrary external image file paths (e.g. from gallery, file picker,
-  /// or custom camera), processes them sequentially in batch through OpenCV
-  /// (crop + enhance + thumbnail + quality), and appends/inserts them into [pages].
+  /// or custom camera), processes them sequentially in batch through OpenCV, and
+  /// appends/inserts them into [pages].
   Future<List<ScannedPage>> addImageFiles(
     List<String> imagePaths, {
     bool preCropped = false,
@@ -421,7 +425,7 @@ class CustomScannerController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // Reorderable List Management
+  // Reorderable List & NID Side Management
   // ---------------------------------------------------------------------------
 
   /// Reorders pages using standard Flutter `ReorderableListView.onReorder`
@@ -442,6 +446,16 @@ class CustomScannerController extends ChangeNotifier {
     if (fromIndex == clampedTo) return;
     final item = _pages.removeAt(fromIndex);
     _pages.insert(clampedTo, item);
+    _renumberPages();
+    _notifySafely();
+  }
+
+  /// Swaps the Front (`pages[0]`) and Back (`pages[1]`) slots during NID card scanning.
+  void swapFrontAndBack() {
+    if (_pages.length < 2) return;
+    final first = _pages[0];
+    _pages[0] = _pages[1];
+    _pages[1] = first;
     _renumberPages();
     _notifySafely();
   }
@@ -478,8 +492,7 @@ class CustomScannerController extends ChangeNotifier {
   // Per-Page & Batch Editing (Re-crop, Rotate, Filter)
   // ---------------------------------------------------------------------------
 
-  /// Runs OpenCV boundary detection on [pageId]'s original image (useful for
-  /// an "Auto-Detect Corners" action inside the manual crop screen).
+  /// Runs OpenCV boundary detection on [pageId]'s original image.
   Future<DetectionResult> detectCornersForPage(String pageId) async {
     final page = pageById(pageId);
     if (page == null) {
@@ -488,8 +501,7 @@ class CustomScannerController extends ChangeNotifier {
     return _detector.detectFile(page.originalPath);
   }
 
-  /// Applies a new [ScanFilter] to [pageId], always re-enhancing from
-  /// `croppedPath` so filters never compound JPEG compression artifacts.
+  /// Applies a new [ScanFilter] to [pageId], always re-enhancing from `croppedPath`.
   Future<ScannedPage> applyFilter(String pageId, ScanFilter filter) async {
     final idx = _pages.indexWhere((p) => p.id == pageId);
     if (idx < 0) throw StateError('Page $pageId not found');
@@ -538,8 +550,7 @@ class CustomScannerController extends ChangeNotifier {
     }
   }
 
-  /// Batch-applies [filter] across **every** page in [pages], reporting live
-  /// [batchProgress] along the way.
+  /// Batch-applies [filter] across **every** page in [pages].
   Future<void> applyFilterToAll(ScanFilter filter) async {
     if (_pages.isEmpty) return;
     _isProcessing = true;
@@ -609,8 +620,7 @@ class CustomScannerController extends ChangeNotifier {
     }
   }
 
-  /// Rotates [pageId] clockwise by [clockwiseQuarterTurns] (`90° × turns`),
-  /// re-cropping cleanly from `originalPath` and re-applying its active filter.
+  /// Rotates [pageId] clockwise by [clockwiseQuarterTurns] (`90° × turns`).
   Future<ScannedPage> rotatePage(
     String pageId, {
     int clockwiseQuarterTurns = 1,
@@ -704,14 +714,17 @@ class CustomScannerController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // Local PDF Generation
+  // Local PDF Generation (Standard & Composite NID)
   // ---------------------------------------------------------------------------
 
-  /// Streams all [pages] in their current order into a local `.pdf` file and
-  /// returns [ScannedPdfResult].
+  /// Streams all [pages] into a local `.pdf` file and returns [ScannedPdfResult].
+  ///
+  /// When `config.capture.scanMode == ScanMode.nidCard` (or [overrideNidConfig]
+  /// is passed), Front and Back NID sides are composed according to [NidScanConfig].
   Future<ScannedPdfResult> generatePdf({
     String? outputFilePath,
     PdfConfig? overridePdfConfig,
+    NidScanConfig? overrideNidConfig,
   }) async {
     if (_pages.isEmpty) {
       throw const PdfGenerationException(
@@ -720,6 +733,10 @@ class CustomScannerController extends ChangeNotifier {
     }
 
     final effectivePdf = overridePdfConfig ?? _config.pdf;
+    final activeNid =
+        overrideNidConfig ??
+        (_config.capture.scanMode == ScanMode.nidCard ? _config.nid : null);
+
     final ws = await _ensureWorkspace();
     final targetPath = await ws.resolvePdfOutputPath(
       outputDirectoryPath: effectivePdf.outputDirectoryPath,
@@ -741,6 +758,7 @@ class CustomScannerController extends ChangeNotifier {
         pages: snapshot,
         outputFilePath: targetPath,
         overrideConfig: effectivePdf,
+        nidCompositeConfig: activeNid,
         onProgress: (p) {
           _pdfProgress = p;
           _notifySafely();

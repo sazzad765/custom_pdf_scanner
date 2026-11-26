@@ -1,3 +1,13 @@
+## 0.2.0
+
+* **Added NID / ID Card Scan Mode (`ScanMode.nidCard`)**:
+  * Added `CustomPdfScanner.scanNidCard(...)`, `CustomScannerConfig.nidCard(...)`, and `NidScanConfig`.
+  * Added dedicated `NidScanScreen` with guided **Front Side** & **Back Side** card slots, one-tap Front ⇅ Back swap (`swapFrontAndBack()`), inline crop/rotate/retake controls, and interactive layout/size chips.
+  * Added **single-page composite PDF generation** (`NidPdfLayout.topAndBottomSinglePage` and `sideBySideSinglePage`) placing both Front and Back NID XObjects onto a single A4/Letter PDF sheet without re-encoding, plus `NidCardPrintSize` presets (`readableMedium`, `actualIsoId1` `85.6 × 53.98 mm`, and `largeFit`).
+  * Added ID-1 card framing guide overlay inside `MultiShotCameraScreen`.
+* **Enhanced `example/` app**:
+  * Added interactive `PDFView` PDF preview screen, Save-to-Device export, persistent local Scan History tab, and NID Card mode playground controls.
+
 ## 0.1.0
 
 * **Initial release** of `custom_pdf_scanner`.

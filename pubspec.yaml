@@ -1,6 +1,6 @@
 name: custom_pdf_scanner
-description: Configurable local document scanner for Flutter with single & multi-page capture, OpenCV perspective crop & filters, reorderable page list, and streaming PDF export.
-version: 0.1.0
+description: Configurable local document & NID card scanner for Flutter with single/multi-page capture, OpenCV perspective crop & filters, reorderable list, and streaming PDF export.
+version: 0.2.0
 homepage: https://github.com/sazzad765/custom_pdf_scanner
 repository: https://github.com/sazzad765/custom_pdf_scanner
 issue_tracker: https://github.com/sazzad765/custom_pdf_scanner/issues
@@ -9,8 +9,8 @@ topics:
   - document-scanner
   - pdf
   - opencv
+  - id-card-scanner
   - camera
-  - image-processing
 
 platforms:
   android:

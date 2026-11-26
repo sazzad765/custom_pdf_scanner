@@ -122,6 +122,17 @@ class ScannerStrings {
     this.cameraScreenTitle = 'Scan Document',
     this.editPageTitle = 'Edit Page',
     this.cropPageTitle = 'Adjust Corners',
+    this.nidScreenTitle = 'Scan NID Card',
+    this.nidFrontLabel = 'Front Side',
+    this.nidBackLabel = 'Back Side',
+    this.nidTapToScanFront = 'Tap to scan Front Side',
+    this.nidTapToScanBack = 'Tap to scan Back Side',
+    this.nidCameraFrontHint = 'Align FRONT side of NID card inside frame',
+    this.nidCameraBackHint = 'Align BACK side of NID card inside frame',
+    this.nidSwapSidesTooltip = 'Swap Front & Back',
+    this.nidTopBottomLayoutLabel = '1 Page (Top & Bottom)',
+    this.nidSideBySideLayoutLabel = '1 Page (Side-by-Side)',
+    this.nidSeparatePagesLayoutLabel = '2 Separate Pages',
     this.addMoreButton = 'Add More',
     this.addMultiPageOption = 'Scan Multiple Pages',
     this.addSinglePageOption = 'Scan Single Page',
@@ -160,6 +171,39 @@ class ScannerStrings {
 
   /// Title of the 4-corner perspective crop screen.
   final String cropPageTitle;
+
+  /// Title of the dedicated NID card scan screen.
+  final String nidScreenTitle;
+
+  /// Label for the Front side slot of an NID card.
+  final String nidFrontLabel;
+
+  /// Label for the Back side slot of an NID card.
+  final String nidBackLabel;
+
+  /// Placeholder prompt inside an empty Front NID slot.
+  final String nidTapToScanFront;
+
+  /// Placeholder prompt inside an empty Back NID slot.
+  final String nidTapToScanBack;
+
+  /// Camera overlay hint when capturing the Front side of an NID card.
+  final String nidCameraFrontHint;
+
+  /// Camera overlay hint when capturing the Back side of an NID card.
+  final String nidCameraBackHint;
+
+  /// Tooltip for swapping Front and Back NID slots.
+  final String nidSwapSidesTooltip;
+
+  /// Label for `NidPdfLayout.topAndBottomSinglePage`.
+  final String nidTopBottomLayoutLabel;
+
+  /// Label for `NidPdfLayout.sideBySideSinglePage`.
+  final String nidSideBySideLayoutLabel;
+
+  /// Label for `NidPdfLayout.separatePages`.
+  final String nidSeparatePagesLayoutLabel;
 
   /// Label for the "+ Add More" button.
   final String addMoreButton;
@@ -254,6 +298,8 @@ class ScannerIcons {
     this.dragHandle = Icons.drag_indicator_rounded,
     this.torchOn = Icons.flash_on_rounded,
     this.torchOff = Icons.flash_off_rounded,
+    this.nidCard = Icons.badge_outlined,
+    this.swapSides = Icons.swap_vert_rounded,
   });
 
   /// Icon for "+ Add More".
@@ -291,6 +337,12 @@ class ScannerIcons {
 
   /// Torch disabled icon.
   final IconData torchOff;
+
+  /// Icon representing an NID / ID card.
+  final IconData nidCard;
+
+  /// Icon for swapping Front and Back NID sides.
+  final IconData swapSides;
 }
 
 /// UI customization and slot builders for `custom_pdf_scanner`.

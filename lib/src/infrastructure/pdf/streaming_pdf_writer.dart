@@ -3,7 +3,18 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../../config/nid_scan_config.dart';
 import '../../config/pdf_config.dart';
+
+/// Encoded PDF XObject payload for one image placed on a PDF page.
+typedef PdfEncodedImage = ({
+  Uint8List encodedStream,
+  int imageWidth,
+  int imageHeight,
+  String colorSpace,
+  String filter,
+  int extraQuarterTurns,
+});
 
 /// Low-level streaming PDF 1.4 writer that writes objects directly to a
 /// [RandomAccessFile] while recording exact byte offsets for the `xref` table.
@@ -52,10 +63,22 @@ class StreamingPdfWriter {
     _writeAscii('\nendobj\n');
   }
 
+  int _writeImageXObject(PdfEncodedImage img) {
+    final imgId = _allocateId();
+    _beginObject(imgId);
+    _writeAscii(
+      '<< /Type /XObject /Subtype /Image '
+      '/Width ${img.imageWidth} /Height ${img.imageHeight} '
+      '/ColorSpace ${img.colorSpace} /BitsPerComponent 8 '
+      '/Filter ${img.filter} /Length ${img.encodedStream.length} >>\nstream\n',
+    );
+    _writeRaw(img.encodedStream);
+    _writeAscii('\nendstream');
+    _endObject();
+    return imgId;
+  }
+
   /// Streams a single image page into the PDF document.
-  ///
-  /// [encodedStream] must be either raw JPEG bytes (`filter: '/DCTDecode'`) or
-  /// zlib-compressed raw pixel bytes (`filter: '/FlateDecode'`).
   void addImagePage({
     required Uint8List encodedStream,
     required int imageWidth,
@@ -87,23 +110,17 @@ class StreamingPdfWriter {
       fit: config.imageFit,
     );
 
-    final imgId = _allocateId();
+    final imgId = _writeImageXObject((
+      encodedStream: encodedStream,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+      colorSpace: colorSpace,
+      filter: filter,
+      extraQuarterTurns: turns,
+    ));
     final contentId = _allocateId();
     final pageId = _allocateId();
 
-    // 1. Image XObject stream.
-    _beginObject(imgId);
-    _writeAscii(
-      '<< /Type /XObject /Subtype /Image '
-      '/Width $imageWidth /Height $imageHeight '
-      '/ColorSpace $colorSpace /BitsPerComponent 8 '
-      '/Filter $filter /Length ${encodedStream.length} >>\nstream\n',
-    );
-    _writeRaw(encodedStream);
-    _writeAscii('\nendstream');
-    _endObject();
-
-    // 2. Page content stream placing /Im0 with exact affine matrix.
     final matrixCmd = _buildMatrixCommand(
       turns: turns,
       x: drawX,
@@ -122,7 +139,6 @@ class StreamingPdfWriter {
     _writeAscii('\nendstream');
     _endObject();
 
-    // 3. Page dictionary.
     _beginObject(pageId);
     _writeAscii(
       '<< /Type /Page /Parent 2 0 R '
@@ -136,16 +152,205 @@ class StreamingPdfWriter {
     _pageObjectIds.add(pageId);
   }
 
+  /// Composes one or two NID card images (`front` and optional `back`) onto a
+  /// **single** fixed PDF page (e.g. A4) according to [nidConfig] without
+  /// re-encoding either image stream.
+  void addNidCompositePage({
+    required PdfEncodedImage front,
+    PdfEncodedImage? back,
+    required NidScanConfig nidConfig,
+  }) {
+    final targetSize = nidConfig.targetPageSize.isFitToImage
+        ? PdfPageSize.a4
+        : nidConfig.targetPageSize;
+    final shortSide = math.min(targetSize.widthPt, targetSize.heightPt);
+    final longSide = math.max(targetSize.widthPt, targetSize.heightPt);
+
+    final sideBySide =
+        back != null &&
+        nidConfig.pdfLayout == NidPdfLayout.sideBySideSinglePage;
+    // Top-and-bottom looks best on portrait A4; side-by-side uses portrait when
+    // cards fit or landscape if needed, keeping portrait A4 for standard KYC sheets.
+    final pageW = shortSide;
+    final pageH = longSide;
+
+    final margin = nidConfig.pageMarginsPt.clamp(0.0, pageW * 0.25);
+    final gap = nidConfig.gapBetweenCardsPt.clamp(4.0, 120.0);
+    final availW = math.max(36.0, pageW - margin * 2);
+    final availH = math.max(36.0, pageH - margin * 2);
+
+    (double, double) orientedDims(PdfEncodedImage img) {
+      final t = ((img.extraQuarterTurns % 4) + 4) % 4;
+      final w = (t.isOdd ? img.imageHeight : img.imageWidth).toDouble();
+      final h = (t.isOdd ? img.imageWidth : img.imageHeight).toDouble();
+      if (nidConfig.normalizeCardAspectRatio &&
+          nidConfig.isoCardAspectRatio > 0) {
+        final ratio = w >= h
+            ? nidConfig.isoCardAspectRatio
+            : 1.0 / nidConfig.isoCardAspectRatio;
+        return (1000.0 * ratio, 1000.0);
+      }
+      return (math.max(1.0, w), math.max(1.0, h));
+    }
+
+    (double, double) cardBoxSize(
+      (double, double) dims, {
+      required double slotMaxW,
+      required double slotMaxH,
+    }) {
+      final aspect = dims.$1 / dims.$2;
+      double desiredW;
+      switch (nidConfig.cardPrintSize) {
+        case NidCardPrintSize.actualIsoId1:
+          // ISO/IEC 7810 ID-1: 85.60 mm = 242.65 pt, 53.98 mm = 153.01 pt.
+          desiredW = aspect >= 1.0 ? 242.65 : 153.01;
+        case NidCardPrintSize.readableMedium:
+          desiredW = sideBySide ? slotMaxW * 0.94 : pageW * 0.62;
+        case NidCardPrintSize.largeFit:
+          desiredW = slotMaxW;
+      }
+      var w = math.min(desiredW, slotMaxW);
+      var h = w / aspect;
+      if (h > slotMaxH) {
+        h = slotMaxH;
+        w = h * aspect;
+      }
+      return (w, h);
+    }
+
+    final frontId = _writeImageXObject(front);
+    final backId = back == null ? null : _writeImageXObject(back);
+
+    final commands = StringBuffer();
+    final frontDims = orientedDims(front);
+    final frontTurns = ((front.extraQuarterTurns % 4) + 4) % 4;
+
+    if (back == null) {
+      final (fw, fh) = cardBoxSize(
+        frontDims,
+        slotMaxW: availW,
+        slotMaxH: availH,
+      );
+      final fx = margin + (availW - fw) / 2;
+      // Place single-sided NID cleanly in upper-middle portion of A4.
+      final fy = pageH - margin - fh - math.min(48.0, (availH - fh) * 0.25);
+      final m0 = _buildMatrixCommand(
+        turns: frontTurns,
+        x: fx,
+        y: fy,
+        w: fw,
+        h: fh,
+      );
+      commands.writeln('q\n$m0\n/Im0 Do\nQ');
+    } else if (sideBySide) {
+      final backDims = orientedDims(back);
+      final backTurns = ((back.extraQuarterTurns % 4) + 4) % 4;
+      final slotW = math.max(18.0, (availW - gap) / 2);
+      final (fw, fh) = cardBoxSize(
+        frontDims,
+        slotMaxW: slotW,
+        slotMaxH: availH,
+      );
+      final (bw, bh) = cardBoxSize(backDims, slotMaxW: slotW, slotMaxH: availH);
+
+      final groupW = fw + gap + bw;
+      final startX = margin + (availW - groupW) / 2;
+      final centerY =
+          pageH - margin - math.min(availH * 0.35, math.max(fh, bh) + 36);
+
+      final fy = (centerY).clamp(margin, pageH - margin - fh);
+      final by = (fy + (fh - bh) / 2).clamp(margin, pageH - margin - bh);
+
+      final m0 = _buildMatrixCommand(
+        turns: frontTurns,
+        x: startX,
+        y: fy,
+        w: fw,
+        h: fh,
+      );
+      final m1 = _buildMatrixCommand(
+        turns: backTurns,
+        x: startX + fw + gap,
+        y: by,
+        w: bw,
+        h: bh,
+      );
+      commands.writeln('q\n$m0\n/Im0 Do\nQ');
+      commands.writeln('q\n$m1\n/Im1 Do\nQ');
+    } else {
+      // Default: Front on top, Back below, centered horizontally on 1 A4 page!
+      final backDims = orientedDims(back);
+      final backTurns = ((back.extraQuarterTurns % 4) + 4) % 4;
+      final slotH = math.max(18.0, (availH - gap) / 2);
+      final (fw, fh) = cardBoxSize(
+        frontDims,
+        slotMaxW: availW,
+        slotMaxH: slotH,
+      );
+      final (bw, bh) = cardBoxSize(backDims, slotMaxW: availW, slotMaxH: slotH);
+
+      final totalStackH = fh + gap + bh;
+      // Center vertically on the sheet.
+      final bottomY = margin + (availH - totalStackH) / 2;
+      final backY = bottomY;
+      final frontY = bottomY + bh + gap;
+
+      final frontX = margin + (availW - fw) / 2;
+      final backX = margin + (availW - bw) / 2;
+
+      final m0 = _buildMatrixCommand(
+        turns: frontTurns,
+        x: frontX,
+        y: frontY,
+        w: fw,
+        h: fh,
+      );
+      final m1 = _buildMatrixCommand(
+        turns: backTurns,
+        x: backX,
+        y: backY,
+        w: bw,
+        h: bh,
+      );
+      commands.writeln('q\n$m0\n/Im0 Do\nQ');
+      commands.writeln('q\n$m1\n/Im1 Do\nQ');
+    }
+
+    final contentBytes = ascii.encode(commands.toString());
+    final contentId = _allocateId();
+    final pageId = _allocateId();
+
+    _beginObject(contentId);
+    _writeAscii('<< /Length ${contentBytes.length} >>\nstream\n');
+    _writeRaw(contentBytes);
+    _writeAscii('\nendstream');
+    _endObject();
+
+    final xObjects = backId == null
+        ? '/Im0 $frontId 0 R'
+        : '/Im0 $frontId 0 R /Im1 $backId 0 R';
+
+    _beginObject(pageId);
+    _writeAscii(
+      '<< /Type /Page /Parent 2 0 R '
+      '/MediaBox [0 0 ${_fmt(pageW)} ${_fmt(pageH)}] '
+      '/Resources << /ProcSet [/PDF /ImageB /ImageC] '
+      '/XObject << $xObjects >> >> '
+      '/Contents $contentId 0 R >>',
+    );
+    _endObject();
+
+    _pageObjectIds.add(pageId);
+  }
+
   /// Writes `/Catalog`, `/Pages`, `/Info`, `xref`, and `trailer`, then closes
   /// the underlying file handle and returns total bytes written.
   int finish(PdfDocumentMetadata metadata, DateTime createdAt) {
     try {
-      // Object 1: Document Catalog.
       _beginObject(1);
       _writeAscii('<< /Type /Catalog /Pages 2 0 R >>');
       _endObject();
 
-      // Object 2: Pages tree root.
       final kids = _pageObjectIds.map((id) => '$id 0 R').join(' ');
       _beginObject(2);
       _writeAscii(
@@ -153,7 +358,6 @@ class StreamingPdfWriter {
       );
       _endObject();
 
-      // Object 3: Document Info dictionary.
       _beginObject(3);
       final infoEntries = <String>[
         if (metadata.title != null && metadata.title!.isNotEmpty)
@@ -171,7 +375,6 @@ class StreamingPdfWriter {
       _writeAscii('<< ${infoEntries.join(' ')} >>');
       _endObject();
 
-      // Cross-reference table (strict 20-byte entries).
       final xrefOffset = _bytePosition;
       final totalObjects = _nextObjectId;
       _writeAscii('xref\n0 $totalObjects\n');
@@ -181,7 +384,6 @@ class StreamingPdfWriter {
         _writeAscii('${offset.toString().padLeft(10, '0')} 00000 n \r\n');
       }
 
-      // Trailer & EOF.
       _writeAscii(
         'trailer\n'
         '<< /Size $totalObjects /Root 1 0 R /Info 3 0 R >>\n'
@@ -283,7 +485,6 @@ class StreamingPdfWriter {
           .replaceAll(')', r'\)');
       return '($escaped)';
     }
-    // UTF-16BE BOM hex string for full Unicode (e.g. Bangla, Arabic, CJK) metadata!
     final hex = StringBuffer('<FEFF');
     for (final unit in value.codeUnits) {
       hex.write(unit.toRadixString(16).padLeft(4, '0').toUpperCase());
@@ -295,7 +496,7 @@ class StreamingPdfWriter {
   static String _pdfDate(DateTime dt) {
     final u = dt.toUtc();
     String p2(int n) => n.toString().padLeft(2, '0');
-    return "D:${u.year.toString().padLeft(4, '0')}"
-        "${p2(u.month)}${p2(u.day)}${p2(u.hour)}${p2(u.minute)}${p2(u.second)}Z";
+    return 'D:${u.year.toString().padLeft(4, '0')}'
+        '${p2(u.month)}${p2(u.day)}${p2(u.hour)}${p2(u.minute)}${p2(u.second)}Z';
   }
 }
