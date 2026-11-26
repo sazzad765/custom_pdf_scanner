@@ -1,7 +1,14 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:custom_pdf_scanner/custom_pdf_scanner.dart';
 import 'package:flutter/material.dart';
 
+import 'pdf_preview_screen.dart';
+import 'scan_history_store.dart';
+
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const ScannerExampleApp());
 }
 
@@ -29,27 +36,57 @@ class ScannerPlaygroundPage extends StatefulWidget {
   State<ScannerPlaygroundPage> createState() => _ScannerPlaygroundPageState();
 }
 
-class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage> {
+class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+  final ScanHistoryStore _historyStore = ScanHistoryStore();
+
   ScanMode _scanMode = ScanMode.multiPage;
   SinglePageBehavior _singleBehavior = SinglePageBehavior.reviewThenPdf;
   CaptureBackend _backend = CaptureBackend.auto;
   ScanFilter _defaultFilter = ScanFilter.magicColor;
   ScanQualityPreset _qualityPreset = ScanQualityPreset.balanced;
   PdfPageSize _pdfPageSize = PdfPageSize.fitToImage;
+  bool _autoOpenPreview = true;
 
-  ScannedPdfResult? _lastResult;
+  ScanHistoryEntry? _latestEntry;
   late final CustomScannerController _embeddedController;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+    _tabController.addListener(() {
+      if (mounted) setState(() {});
+    });
     _embeddedController = CustomScannerController(config: _buildConfig());
+    _historyStore.addListener(_onHistoryChanged);
+    unawaited(_initHistory());
+  }
+
+  Future<void> _initHistory() async {
+    await _historyStore.init();
+    if (mounted && _historyStore.entries.isNotEmpty) {
+      setState(() => _latestEntry = _historyStore.entries.first);
+    }
   }
 
   @override
   void dispose() {
+    _historyStore.removeListener(_onHistoryChanged);
+    _historyStore.dispose();
     _embeddedController.dispose();
+    _tabController.dispose();
     super.dispose();
+  }
+
+  void _onHistoryChanged() {
+    if (!mounted) return;
+    setState(() {
+      _latestEntry = _historyStore.entries.isEmpty
+          ? null
+          : _historyStore.entries.first;
+    });
   }
 
   CustomScannerConfig _buildConfig() => CustomScannerConfig(
@@ -64,6 +101,7 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage> {
       defaultFilter: _defaultFilter,
     ),
     pdf: PdfConfig(
+      outputDirectoryPath: _historyStore.pdfsDirectoryPath,
       pageSize: _pdfPageSize,
       marginsPt: _pdfPageSize.isFitToImage
           ? EdgeInsets.zero
@@ -72,18 +110,63 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage> {
     ),
   );
 
+  Future<void> _handleCompletedScan(
+    ScannedPdfResult result, {
+    required String modeLabel,
+  }) async {
+    final entry = await _historyStore.recordScan(
+      result: result,
+      scanModeLabel: modeLabel,
+      filterLabel: _defaultFilter.defaultLabel,
+      pageSizeLabel: _pdfPageSize.name.toUpperCase(),
+    );
+    if (!mounted) return;
+    setState(() => _latestEntry = entry);
+    if (_autoOpenPreview) {
+      await _openPreview(entry);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Saved "${entry.title}" (${entry.pageCount} pages)'),
+          action: SnackBarAction(
+            label: 'Preview',
+            onPressed: () => _openPreview(entry),
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _openPreview(ScanHistoryEntry entry) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) =>
+            PdfPreviewScreen(entry: entry, historyStore: _historyStore),
+      ),
+    );
+  }
+
   Future<void> _launchModalScanner() async {
+    await _historyStore.init();
+    if (!mounted) return;
     final result = await CustomPdfScanner.scan(context, config: _buildConfig());
     if (result != null && mounted) {
-      setState(() => _lastResult = result);
+      await _handleCompletedScan(
+        result,
+        modeLabel: _scanMode == ScanMode.singlePage
+            ? 'Single Page'
+            : 'Multi-Page',
+      );
     }
   }
 
   Future<void> _embeddedScan(ScanMode mode) async {
+    await _historyStore.init();
     _embeddedController.updateConfig(_buildConfig());
     if (_embeddedController.shouldUseNativeMlKit()) {
       await _embeddedController.captureAndProcessWithMlKit(modeOverride: mode);
     } else {
+      if (!mounted) return;
       final raw = await Navigator.of(context).push<List<CapturedRawPage>>(
         MaterialPageRoute(
           builder: (_) => MultiShotCameraScreen(
@@ -99,33 +182,104 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage> {
   }
 
   Future<void> _embeddedGeneratePdf() async {
+    await _historyStore.init();
     _embeddedController.updateConfig(_buildConfig());
     final res = await _embeddedController.generatePdf();
     if (mounted) {
-      setState(() => _lastResult = res);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Saved ${res.pageCount}-page PDF: ${res.pdfPath}'),
+      await _handleCompletedScan(res, modeLabel: 'Embedded List');
+    }
+  }
+
+  Future<void> _renameEntryDialog(ScanHistoryEntry entry) async {
+    final textCtrl = TextEditingController(text: entry.title);
+    final updated = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Rename Document'),
+        content: TextField(
+          controller: textCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Document Title'),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v),
         ),
-      );
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(textCtrl.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    textCtrl.dispose();
+    if (updated != null && updated.trim().isNotEmpty) {
+      await _historyStore.rename(entry.id, updated);
+    }
+  }
+
+  Future<void> _confirmClearHistory() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear all scan history?'),
+        content: const Text(
+          'This will permanently delete all saved demo PDFs from history.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Clear All'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _historyStore.clearAll();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('custom_pdf_scanner SDK'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: '1. Modal Launcher'),
-              Tab(text: '2. Embedded Reorderable List'),
-            ],
-          ),
+    final historyCount = _historyStore.entries.length;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('custom_pdf_scanner SDK'),
+        actions: [
+          if (_tabController.index == 2 && historyCount > 0)
+            IconButton(
+              tooltip: 'Clear History',
+              onPressed: _confirmClearHistory,
+              icon: const Icon(Icons.delete_sweep_outlined),
+            ),
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: [
+            const Tab(text: '1. Launcher'),
+            const Tab(text: '2. Embedded'),
+            Tab(
+              text: historyCount == 0
+                  ? '3. History'
+                  : '3. History ($historyCount)',
+            ),
+          ],
         ),
-        body: TabBarView(children: [_buildLauncherTab(), _buildEmbeddedTab()]),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildLauncherTab(),
+          _buildEmbeddedTab(),
+          _buildHistoryTab(),
+        ],
       ),
     );
   }
@@ -230,33 +384,25 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage> {
           ],
           onChanged: (v) => setState(() => _pdfPageSize = v!),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Open PDF Preview immediately after scan'),
+          value: _autoOpenPreview,
+          onChanged: (v) => setState(() => _autoOpenPreview = v),
+        ),
+        const SizedBox(height: 12),
         FilledButton.icon(
+          style: FilledButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
           onPressed: _launchModalScanner,
           icon: const Icon(Icons.document_scanner_outlined),
           label: const Text('Launch CustomPdfScanner.scan()'),
         ),
-        if (_lastResult != null) ...[
+        if (_latestEntry != null) ...[
           const SizedBox(height: 20),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Generated PDF (${_lastResult!.pageCount} pages)',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 6),
-                  Text('Path: ${_lastResult!.pdfPath}'),
-                  Text('Size: ${_lastResult!.byteLength} bytes'),
-                  if (_lastResult!.sha256 != null)
-                    Text('SHA-256: ${_lastResult!.sha256}'),
-                ],
-              ),
-            ),
-          ),
+          _buildHistoryCard(_latestEntry!, isLatestHighlight: true),
         ],
       ],
     );
@@ -305,14 +451,15 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage> {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: FilledButton(
+                    child: FilledButton.icon(
                       onPressed:
                           _embeddedController.isEmpty ||
                               _embeddedController.isBusy
                           ? null
                           : _embeddedGeneratePdf,
-                      child: Text(
-                        'Save PDF (${_embeddedController.pageCount})',
+                      icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                      label: Text(
+                        'Save & Preview (${_embeddedController.pageCount})',
                       ),
                     ),
                   ),
@@ -322,6 +469,169 @@ class _ScannerPlaygroundPageState extends State<ScannerPlaygroundPage> {
           ],
         );
       },
+    );
+  }
+
+  Widget _buildHistoryTab() {
+    if (!_historyStore.isLoaded) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final items = _historyStore.entries;
+    if (items.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.history_rounded,
+                size: 56,
+                color: Theme.of(context).colorScheme.outline,
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'No scanned PDFs yet',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Every PDF you generate in Tab 1 or Tab 2 is saved locally here for instant preview.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.black54),
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: () => _tabController.animateTo(0),
+                icon: const Icon(Icons.document_scanner_outlined),
+                label: const Text('Scan a Document'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.all(14),
+      itemCount: items.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 10),
+      itemBuilder: (context, index) => _buildHistoryCard(items[index]),
+    );
+  }
+
+  Widget _buildHistoryCard(
+    ScanHistoryEntry entry, {
+    bool isLatestHighlight = false,
+  }) {
+    final hasCover =
+        entry.coverImagePath != null &&
+        File(entry.coverImagePath!).existsSync();
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade300),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _openPreview(entry),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  width: 54,
+                  height: 70,
+                  color: Colors.teal.shade50,
+                  child: hasCover
+                      ? Image.file(
+                          File(entry.coverImagePath!),
+                          fit: BoxFit.cover,
+                          cacheWidth: 160,
+                        )
+                      : Icon(
+                          Icons.picture_as_pdf_rounded,
+                          color: Colors.teal.shade700,
+                          size: 30,
+                        ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (isLatestHighlight)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Text(
+                          'LATEST GENERATED PDF',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.6,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                    Text(
+                      entry.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${entry.pageCount} ${entry.pageCount == 1 ? 'page' : 'pages'} · '
+                      '${ScanHistoryStore.formatBytes(entry.byteLength)} · '
+                      '${entry.filterLabel}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      ScanHistoryStore.formatTimestamp(entry.createdAt),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.black45,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Preview PDF',
+                onPressed: () => _openPreview(entry),
+                icon: Icon(
+                  Icons.visibility_outlined,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (action) {
+                  if (action == 'preview') _openPreview(entry);
+                  if (action == 'rename') _renameEntryDialog(entry);
+                  if (action == 'delete') _historyStore.deleteEntry(entry.id);
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'preview', child: Text('Preview PDF')),
+                  PopupMenuItem(value: 'rename', child: Text('Rename')),
+                  PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
