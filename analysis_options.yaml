@@ -1,11 +1,8 @@
 include: package:flutter_lints/flutter.yaml
 
-analyzer:
-  language:
-    strict-casts: false
-
 linter:
   rules:
     prefer_const_constructors: true
     prefer_final_locals: true
+    public_member_api_docs: true
     unawaited_futures: true

@@ -1,0 +1,31 @@
+# Build & tool caches
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+coverage/
+doc/
+pubspec.lock
+
+# IDE & OS metadata
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Keep example/ lightweight & free of local signing/SDK paths on pub.dev
+# (local example/android and example/ios remain on disk for `flutter run`)
+example/.dart_tool/
+example/.flutter-plugins
+example/.flutter-plugins-dependencies
+example/.idea/
+example/build/
+example/*.iml
+example/pubspec.lock
+example/android/
+example/ios/
+example/macos/
+example/linux/
+example/windows/
+example/web/

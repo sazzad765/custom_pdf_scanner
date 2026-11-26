@@ -1,16 +1,23 @@
-# custom_pdf_scanner_example
+# custom_pdf_scanner Example
 
-A new Flutter project.
+Interactive demo application for [`custom_pdf_scanner`](../README.md) showcasing:
 
-## Getting Started
+1. **Modal Launcher Tab (`CustomPdfScanner.scan`)**:
+   - Switch dynamically between `ScanMode.multiPage` and `ScanMode.singlePage` (`reviewThenPdf`, `immediatePdf`, `addToPageList`).
+   - Switch between `CaptureBackend.auto`, `customCamera` (live OpenCV edge overlay), and `mlKit`.
+   - Test `ScanFilter` (`Magic Color`, `Natural`, `Grayscale`, `Black & White`, `Original`), `ScanQualityPreset`, and `PdfPageSize` (`Fit to Page`, `A4`, `US Letter`).
+2. **Embedded Reorderable List Tab (`ScannedPagesReorderableView`)**:
+   - Demonstrates embedding `CustomScannerController` + `ScannedPagesReorderableView` directly inside your own app screen with custom `+1 Page`, `+Multi`, and `Save PDF` buttons.
 
-This project is a starting point for a Flutter application.
+## Running Locally on a Device
 
-A few resources to get you started if this is your first Flutter project:
+If `android/` or `ios/` platform folders are not present (for example, when downloaded from `pub.dev`), generate them once:
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+```bash
+cd example
+flutter create --platforms=android,ios .
+flutter pub get
+flutter run
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Ensure `minSdk = 24` in `android/app/build.gradle.kts`, `<uses-permission android:name="android.permission.CAMERA" />` in `AndroidManifest.xml`, and `NSCameraUsageDescription` in `ios/Runner/Info.plist`.

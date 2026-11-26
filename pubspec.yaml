@@ -1,9 +1,9 @@
 name: custom_pdf_scanner
 description: Configurable local document scanner for Flutter with single & multi-page capture, OpenCV perspective crop & filters, reorderable page list, and streaming PDF export.
 version: 0.1.0
-homepage: https://github.com/example/custom_pdf_scanner
-repository: https://github.com/example/custom_pdf_scanner
-issue_tracker: https://github.com/example/custom_pdf_scanner/issues
+homepage: https://github.com/sazzad765/custom_pdf_scanner
+repository: https://github.com/sazzad765/custom_pdf_scanner
+issue_tracker: https://github.com/sazzad765/custom_pdf_scanner/issues
 
 topics:
   - document-scanner
@@ -41,4 +41,3 @@ hooks:
       include_modules:
         - imgcodecs
         - imgproc
-

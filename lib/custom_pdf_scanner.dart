@@ -1,6 +1,23 @@
-/// Configurable local document scanner SDK for Flutter with single & multi-page
-/// capture, OpenCV perspective cropping & enhancement filters, an embeddable
-/// reorderable page list with "+ Add More", and streaming local PDF generation.
+/// Configurable, 100% local/offline document scanner SDK for Flutter with
+/// single-page & multi-page batch capture, OpenCV perspective cropping &
+/// enhancement filters, an embeddable reorderable page list/grid with
+/// "+ Add More", and a streaming on-device PDF 1.4 generator.
+///
+/// ## Quickstart
+///
+/// ```dart
+/// import 'package:custom_pdf_scanner/custom_pdf_scanner.dart';
+///
+/// final result = await CustomPdfScanner.scanMultiPage(context);
+/// if (result != null) {
+///   print('Saved ${result.pageCount} pages to ${result.pdfPath}');
+/// }
+/// ```
+///
+/// For embedded UI workflows, instantiate [CustomScannerController] and mount
+/// [ScannedPagesReorderableView] inside your own widget tree. For headless file
+/// processing without UI, call [CustomPdfScanner.processFilesToPdf] or
+/// [LocalPdfBuilder].
 library;
 
 // Configuration & Theme

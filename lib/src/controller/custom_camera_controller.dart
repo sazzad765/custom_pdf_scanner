@@ -69,7 +69,7 @@ class CustomCameraController extends ChangeNotifier
   bool _armed = true;
   DateTime _lastAnalysis = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// Callback invoked when [autoCapture] triggers a steady-page capture.
+  /// Callback invoked when [autoCaptureEnabled] triggers a steady-page capture.
   VoidCallback? onAutoCaptureTriggered;
 
   /// Current camera initialization state.

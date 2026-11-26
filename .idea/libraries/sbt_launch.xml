@@ -1,9 +1,0 @@
-<component name="libraryTable">
-  <library name="sbt-launch">
-    <CLASSES>
-      <root url="jar://$PROJECT_DIR$/.dart_tool/hooks_runner/shared/dartcv4/build/7ad245dadc/_deps/opencv-src/samples/java/sbt/sbt/sbt-launch.jar!/" />
-    </CLASSES>
-    <JAVADOC />
-    <SOURCES />
-  </library>
-</component>

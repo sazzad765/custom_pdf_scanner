@@ -1,11 +1,38 @@
+# Dart / Flutter
 .dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
 .packages
 build/
 coverage/
 doc/api/
 pubspec.lock
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Example build outputs & local SDK configs
 example/.dart_tool/
+example/.flutter-plugins
+example/.flutter-plugins-dependencies
+example/.idea/
+example/*.iml
 example/build/
 example/pubspec.lock
-example/ios/Pods/
+example/android/.gradle/
+example/android/local.properties
+example/android/app/debug/
+example/android/app/profile/
+example/android/app/release/
 example/ios/.symlinks/
+example/ios/Flutter/Flutter.framework
+example/ios/Flutter/Flutter.podspec
+example/ios/Flutter/Generated.xcconfig
+example/ios/Flutter/ephemeral/
+example/ios/Pods/
+example/ios/Runner.xcworkspace/xcuserdata/
+example/ios/Runner.xcodeproj/xcuserdata/
+example/ios/Runner.xcodeproj/project.xcworkspace/xcuserdata/
